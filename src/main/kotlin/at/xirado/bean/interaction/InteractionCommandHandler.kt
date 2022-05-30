@@ -4,6 +4,7 @@ import at.xirado.bean.Application
 import at.xirado.bean.util.SUPPORT_BUTTON
 import at.xirado.bean.util.replyError
 import at.xirado.bean.util.sendErrorMessage
+import at.xirado.bean.util.toEnumSet
 import dev.minn.jda.ktx.await
 import io.github.classgraph.ClassGraph
 import net.dv8tion.jda.api.Permission
@@ -37,7 +38,7 @@ class InteractionCommandHandler(private val application: Application) {
     suspend fun handleAutocomplete(event: CommandAutoCompleteInteractionEvent) {
         val guild = event.guild!!
         val guildId = guild.idLong
-        val command = getGenericCommand(guildId, event.name, event.commandType.id)?: return
+        val command = getGenericCommand(guildId, event.name, event.commandType.id) ?: return
 
         when (command) {
             is SlashCommand -> {
@@ -46,35 +47,36 @@ class InteractionCommandHandler(private val application: Application) {
         }
     }
 
+    // method is too complex, will come back later.
     suspend fun handleCommand(event: GenericCommandInteractionEvent) {
         val guild = event.guild!!
         val guildId = guild.idLong
-        val command = getGenericCommand(guildId, event.name, event.commandType.id)?: return
+        val command = getGenericCommand(guildId, event.name, event.commandType.id) ?: return
         val member = event.member!!
 
-        if (CommandFlag.DEVELOPER_ONLY in command.commandFlags) {
-            if (member.idLong !in application.config.devUsers) {
-                event.replyError("This maze isn't meant for you!", ephemeral = true).await()
-                return
-            }
+        if (CommandFlag.DEVELOPER_ONLY in command.commandFlags && memberIsDeveloper(member)) {
+            return event.replyError("This maze isn't meant for you!", ephemeral = true).queue()
         }
 
         val missingUserPerms = getMissingPermissions(member, event.guildChannel, command.requiredUserPermissions)
 
         if (missingUserPerms.isNotEmpty()) {
             val singular = missingUserPerms.size == 1
-            val parsed = missingUserPerms.stream().map { "`${it}`" }.collect(Collectors.joining(", "))
-            event.reply(":x: You are missing the following ${if (singular) "permission" else "permissions"}:\n$parsed").await()
+            val parsed = missingUserPerms.joinToString { "`${it}`" }
+            event.reply(":x: You are missing the following ${if (singular) "permission" else "permissions"}:\n$parsed")
+                .await()
             log.debug("Refusing execution of command ${command.commandData.name} (Type=${command.type}, Guild=${guild.idLong}, User=${member.idLong}, Channel=${event.guildChannel.idLong}): User Missing permissions $missingUserPerms")
             return
         }
 
-        val missingBotPerms = getMissingPermissions(guild.selfMember, event.guildChannel, command.requiredBotPermissions)
+        val missingBotPerms =
+            getMissingPermissions(guild.selfMember, event.guildChannel, command.requiredBotPermissions)
 
         if (missingBotPerms.isNotEmpty()) {
             val singular = missingBotPerms.size == 1
-            val parsed = missingBotPerms.stream().map { "`${it}`" }.collect(Collectors.joining(", "))
-            event.reply(":x: I am missing the following ${if (singular) "permission" else "permissions"}:\n$parsed").await()
+            val parsed = missingUserPerms.joinToString { "`${it}`" }
+            event.reply(":x: I am missing the following ${if (singular) "permission" else "permissions"}:\n$parsed")
+                .await()
             log.debug("Refusing execution of command ${command.commandData.name} (Type=${command.type}, Guild=${guild.idLong}, User=${member.idLong}, Channel=${event.guildChannel.idLong}): Bot Missing permissions $missingBotPerms")
             return
         }
@@ -90,9 +92,11 @@ class InteractionCommandHandler(private val application: Application) {
         if (CommandFlag.SAME_VOICE_CHANNEL_ONLY in command.commandFlags) {
             val userVoiceState = member.voiceState!!
             val botVoiceState = guild.selfMember.voiceState!!
-            if (botVoiceState.channel != null) {
+            if (botVoiceState.channel != null ) {
+                // nested if could probably be converted into a function and be put in the first if statement for more code readability
                 if (userVoiceState.channel != botVoiceState.channel) {
-                    event.reply("You must be listening in ${botVoiceState.channel!!.asMention} to use this command!").await()
+                    event.reply("You must be listening in ${botVoiceState.channel!!.asMention} to use this command!")
+                        .await()
                     return
                 }
             }
@@ -106,12 +110,15 @@ class InteractionCommandHandler(private val application: Application) {
         }
     }
 
+
+    private fun memberIsDeveloper(member: Member): Boolean = member.idLong in application.config.devUsers
+
     private fun handleError(event: GenericCommandInteractionEvent, throwable: Throwable) {
         log.error("An unhandled error was encountered", throwable)
         val locale = application.localizationManager.getForGuild(event.guild!!)
 
-        val errorMessage = locale.get("general.unknown_error_occurred")?: "An unknown error occurred"
-        val supportMessage = locale.get("general.support")?: "Support"
+        val errorMessage = locale.get("general.unknown_error_occurred") ?: "An unknown error occurred"
+        val supportMessage = locale.get("general.support") ?: "Support"
         val button = SUPPORT_BUTTON.withLabel(supportMessage)
 
         if (event.isAcknowledged)
@@ -167,9 +174,9 @@ class InteractionCommandHandler(private val application: Application) {
 
         val updateAction = guild.updateCommands()
         val commands = guildCommands[guildId]!!
-        commands.forEach { updateAction.addCommands(it.commandData)}
+        commands.forEach { updateAction.addCommands(it.commandData) }
         updateAction.queue {
-            it.forEach {  command ->
+            it.forEach { command ->
                 log.debug("Registered command ${command.name} on guild $guildId")
             }
         }
@@ -189,31 +196,18 @@ class InteractionCommandHandler(private val application: Application) {
         }
     }
 
-    fun getGuildCommands() : Map<Long, List<GenericCommand>> {
-        return Collections.unmodifiableMap(guildCommands)
-    }
+    fun getGuildCommands(): Map<Long, List<GenericCommand>>
+        = Collections.unmodifiableMap(guildCommands)
 
-    private fun getGenericCommand(name: String, type: Int) : GenericCommand? {
-        return globalCommands.stream()
-            .filter { it.commandData.name == name && it.type.id == type}
-            .findFirst().orElse(null)
-    }
+    private fun getGenericCommand(name: String, type: Int): GenericCommand?
+        = globalCommands.firstOrNull { it.commandData.name == name && it.type.id == type }
 
-    private fun getGenericCommand(guildId: Long, name: String, type: Int) : GenericCommand? {
-        return guildCommands.getOrDefault(guildId, listOf())
-            .stream()
-            .filter { it.commandData.name == name && it.type.id == type }
-            .findFirst()
-            .orElse(getGenericCommand(name, type))
-    }
 
-    private fun getMissingPermissions(member: Member, channel: GuildChannel, requiredPerms: EnumSet<Permission>) : EnumSet<Permission> {
-        val perms = EnumSet.noneOf(Permission::class.java)
+    private fun getGenericCommand(guildId: Long, name: String, type: Int): GenericCommand?
+    = guildCommands.getOrDefault(guildId, listOf())
+            .firstOrNull { it.commandData.name == name && it.type.id == type }
+        ?: getGenericCommand(name, type)
 
-        for (permission in requiredPerms) {
-            if (!member.hasPermission(channel, permission))
-                perms.add(permission)
-        }
-        return perms
-    }
+    private fun getMissingPermissions(member: Member, channel: GuildChannel, requiredPerms: EnumSet<Permission>) =
+        requiredPerms.filter { member.hasPermission(channel, it) }.toEnumSet()
 }
